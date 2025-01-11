@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crawl Controller</title>
+    <script>
+        let crawling = false;
+
+        function startCrawl() {
+            const urls = document.getElementById('urls').value.trim();
+            const maxDepth = document.getElementById('maxDepth').value || 10;
+
+            if (!urls) {
+                alert('Please enter at least one URL.');
+                return;
+            }
+
+            if (crawling) {
+                alert('Crawl is already in progress.');
+                return;
+            }
+
+            crawling = true;
+
+            fetch('/start_crawl', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: `url=${encodeURIComponent(urls)}&max_depth=${encodeURIComponent(maxDepth)}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    crawling = false;
+                    alert(data.error);
+                } else {
+                    alert(data.message);
+                }
+            })
+            .catch(error => {
+                crawling = false;
+                console.error('Error starting crawl:', error);
+                alert('Failed to start crawl.');
+            });
+        }
+
+        function stopCrawl() {
+            if (!crawling) {
+                alert('No crawl is in progress.');
+                return;
+            }
+
+            fetch('/stop_crawl', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    crawling = false;
+                    if (data.error) {
+                        alert(data.error);
+                    } else {
+                        alert(data.message);
+                    }
+                })
+                .catch(error => {
+                    crawling = false;
+                    console.error('Error stopping crawl:', error);
+                    alert('Failed to stop crawl.');
+                });
+        }
+
+        function checkStatus() {
+            fetch('/crawl_status')
+                .then(response => response.json())
+                .then(data => {
+                    const visitedUrls = document.getElementById('visitedUrls');
+                    const productUrls = document.getElementById('productUrls');
+                    const productUrlsInFile = document.getElementById('productUrlsInFile');
+
+                    if (data.error) {
+                        visitedUrls.textContent = 'Visited URLs: 0';
+                        productUrls.textContent = 'Product URLs Found: 0';
+                        productUrlsInFile.innerHTML = 'No product URLs found.';
+                        alert(data.error);
+                        return;
+                    }
+
+                    visitedUrls.textContent = `Visited URLs: ${data.visited_urls}`;
+                    productUrls.textContent = `Product URLs Found: ${data.products_urls}`;
+                    productUrlsInFile.innerHTML = '';
+
+                    if (data.product_urls_in_file.length > 0) {
+                        const listTitle = document.createElement('strong');
+                        listTitle.textContent = 'Product URLs in File:';
+                        productUrlsInFile.appendChild(listTitle);
+
+                        const ul = document.createElement('ul');
+                        data.product_urls_in_file.forEach(url => {
+                            const li = document.createElement('li');
+                            li.textContent = url;
+                            ul.appendChild(li);
+                        });
+                        productUrlsInFile.appendChild(ul);
+                    } else {
+                        productUrlsInFile.textContent = 'No product URLs found in the file.';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    alert('Failed to fetch status.');
+                });
+        }
+    </script>
+</head>
+<body>
+    <h1>Crawl Controller</h1>
+
+    <div id="control-section">
+        <h2>Start Crawl</h2>
+        <label for="urls">Enter URLs (comma-separated):</label>
+        <input type="text" id="urls" placeholder="Enter multiple URLs" />
+        <br><br>
+        <label for="maxDepth">Max Depth:</label>
+        <input type="number" id="maxDepth" value="10" />
+        <br><br>
+        <button onclick="startCrawl()">Start Crawl</button>
+        <button onclick="stopCrawl()">Stop Crawl</button>
+    </div>
+
+    <hr>
+
+    <div id="status-section">
+        <h2>Status</h2>
+        <button onclick="checkStatus()">Check Status</button>
+        <br><br>
+        <p id="visitedUrls">Visited URLs: 0</p>
+        <p id="productUrls">Product URLs Found: 0</p>
+        <div id="productUrlsInFile">
+        </div>
+    </div>
+</body>
+</html>

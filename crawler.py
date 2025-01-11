@@ -1,6 +1,7 @@
 import re
 import random
 import time
+import threading
 from urllib.parse import urljoin
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -9,7 +10,7 @@ from bs4 import BeautifulSoup, SoupStrainer
 from concurrent.futures import ThreadPoolExecutor
 
 class Crawler:
-    def __init__(self, url, output_file="product_urls.txt"):
+    def __init__(self, url, output_file="product_urls.txt", send_result_callback=None):
         """
         Initializes the Crawler with the given URL and optional output file.
         Configures Selenium WebDriver options and sets up patterns for product and listing URLs.
@@ -43,16 +44,21 @@ class Crawler:
         ]
 
         self.output_file = output_file  # File to store identified product URLs
+        self.send_result_callback = send_result_callback
 
         # Configuring Selenium WebDriver options
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        # chrome_options.add_argument("--headless")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--blink-settings=imagesEnabled=false")
         chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
         chrome_options.add_argument(f"user-agent={random.choice(user_agents)}")
         self.driver = webdriver.Chrome(options=chrome_options)
+
+        # Threading event to manage crawl stopping
+        self.crawling_active = threading.Event()
+        self.crawling_active.set()  # Initially active
 
     def _is_valid(self, url):
         """
@@ -64,11 +70,10 @@ class Crawler:
                                r'(?::\d+)?'
                                r'(?:/?|[/?]\S+)$', re.IGNORECASE)
         return bool(url_regex.match(url))
-    
+
     def _fetch_page(self, url):
         """
         Fetches the content of a URL using Selenium with infinite scrolling.
-        Checks for product-specific features to refine patterns.
         """
         try:
             self.driver.get(url)
@@ -84,47 +89,10 @@ class Crawler:
                     break
                 last_height = new_height
 
-            # Check for product-specific features dynamically
-            if self._has_product_features():
-                self._add_to_product_patterns(url)
-
             return self.driver.page_source
         except Exception as e:
             print(f"Skipping {url} due to {e}")
             return None
-
-    def _has_product_features(self):
-        """
-        Intelligently determines if the page has product-specific features.
-        Specifically checks for 'Add to cart' or 'Buy now' buttons even if 
-        not hard coded before hand.
-        """
-        try:
-            add_to_cart_buttons = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Add to cart')]")
-            buy_now_buttons = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Buy now')]")
-            
-            total_buttons = len(add_to_cart_buttons) + len(buy_now_buttons)
-            
-            return total_buttons == 1
-            
-        except Exception as e:
-            print(f"Error checking product features: {e}")
-            return False
-
-    def _add_to_product_patterns(self, url):
-        """
-        Increase the crawl intelligence by adding new product URL patterns based on 
-        observed URLs.
-        """
-        for pattern in self.product_url_patterns:
-            if pattern in url:
-                return
-
-        # Extracting potential patterns from the URL
-        potential_pattern = url.split("/")[-2] if "/" in url else url.split("?")[0]
-        if potential_pattern not in self.product_url_patterns:
-            self.product_url_patterns.append(potential_pattern)
-            print(f"New product URL pattern added: {potential_pattern}")
 
     def _extract_links(self, page_content):
         """
@@ -132,7 +100,7 @@ class Crawler:
         """
         soup = BeautifulSoup(page_content, "lxml", parse_only=SoupStrainer("a"))
         links = [a['href'] for a in soup.find_all("a", href=True)]
-
+        
         # Exclude links with patterns in `exclude_patterns`
         links = [link for link in links if not any(exclude in link.lower() for exclude in self.exclude_patterns)]
         
@@ -163,13 +131,6 @@ class Crawler:
                     self.listing_patterns.append(plural_pattern)
                 return True
 
-        pagination_patterns = ["page=", "/page/", "?page="]
-        for pagination in pagination_patterns:
-            if pagination in url_lower:
-                if pagination not in self.listing_patterns:
-                    self.listing_patterns.append(pagination)
-                return True
-
         return False
 
     def _sanitize_url(self, url):
@@ -184,23 +145,29 @@ class Crawler:
         """
         with open(self.output_file, "a") as f:
             f.write(url + "\n")
+        
+        if self.send_result_callback:
+            self.send_result_callback(url)
 
     def _print_logs(self, url):
         """
-        Logs crawled URLs to the console. For my development and ease of spotting the results
+        Logs crawled URLs to the console.
         """
         print(f"\033[91m{url}\033[0m")
 
     def _recursive_crawl(self, current_url, current_depth, max_depth):
         """
         Recursively crawls pages starting from the given URL up to the maximum depth.
-        Had to setup depth to avoid infinite stack
         """
-        if current_depth > max_depth or current_url in self.visited_urls:
+        if not self.crawling_active.is_set() or current_depth > max_depth or current_url in self.visited_urls:
             return
 
         self.visited_urls.add(current_url)
         page_content = self._fetch_page(current_url)
+
+        if not self.crawling_active.is_set():
+            return
+
         if page_content is None:
             return
 
@@ -211,8 +178,15 @@ class Crawler:
             self._print_logs(sanitized_url)
 
         links = self._extract_links(page_content)
+
+        if not self.crawling_active.is_set():
+            return
+
         with ThreadPoolExecutor(max_workers=2) as executor:
-            executor.map(lambda link: self._recursive_crawl(urljoin(sanitized_url, link), current_depth + 1, max_depth), links)
+            for link in links:
+                if not self.crawling_active.is_set():
+                    break
+                executor.submit(self._recursive_crawl, urljoin(sanitized_url, link), current_depth + 1, max_depth)
 
     def crawl(self, max_depth=10):
         """
@@ -222,3 +196,9 @@ class Crawler:
             print(f"Skipping {self.url} due to invalid URL.")
             return
         self._recursive_crawl(self.url, 0, max_depth)
+
+    def stop_crawl(self):
+        """
+        Stops the crawling process.
+        """
+        self.crawling_active.clear()
