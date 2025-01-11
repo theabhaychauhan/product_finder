@@ -8,6 +8,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup, SoupStrainer
 from concurrent.futures import ThreadPoolExecutor
+import os
 
 class Crawler:
     def __init__(self, url, output_file="product_urls.txt", send_result_callback=None):
@@ -48,13 +49,17 @@ class Crawler:
 
         # Configuring Selenium WebDriver options
         chrome_options = Options()
+        chrome_options.binary_location = os.environ.get("GOOGLE_CHROME_BIN")
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--blink-settings=imagesEnabled=false")
         chrome_options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
         chrome_options.add_argument(f"user-agent={random.choice(user_agents)}")
-        self.driver = webdriver.Chrome(options=chrome_options)
+        self.driver = webdriver.Chrome(
+            executable_path=os.environ.get("CHROMEDRIVER_PATH"),
+            options=chrome_options
+        )
 
         # Threading event to manage crawl stopping
         self.crawling_active = threading.Event()
